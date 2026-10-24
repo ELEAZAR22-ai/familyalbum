@@ -15,10 +15,12 @@ export default function Profile() {
   const [memberCount, setMemberCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
-  // Modal States
+  // Action Modals State (Invite, Access, etc.)
   const [activeModal, setActiveModal] = useState<'invite' | 'access' | 'notifications' | 'members' | null>(null);
   const [inviteEmail, setInviteEmail] = useState('');
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+
+  // Edit Profile State
   const [showEditModal, setShowEditModal] = useState(false);
   const [editName, setEditName] = useState('');
   const [newAvatarBase64, setNewAvatarBase64] = useState<string | null>(null);
@@ -46,27 +48,17 @@ export default function Profile() {
           setAvatarUrl(signedUrl);
         }
       }
+
+      // Fetch member count
+      const { count } = await supabase.from('users').select('*', { count: 'exact', head: true });
+      setMemberCount(count || 1);
+
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
     }
   };
-
-  useEffect(() => {
-    async function loadData() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-
-      const { data: profileData } = await supabase.from('users').select('*').eq('id', user.id);
-      const { count } = await supabase.from('users').select('*', { count: 'exact', head: true });
-
-      setProfile(profileData?.[0] || { full_name: user.email?.split('@')[0] });
-      setMemberCount(count || 1);
-      setLoading(false);
-    }
-    loadData();
-  }, []);
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
@@ -76,9 +68,9 @@ export default function Profile() {
   // --- EDIT PROFILE LOGIC ---
   const pickAvatar = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'], // Updated to avoid deprecation warning
       allowsEditing: true,
-      aspect: [1, 1], // Square crop for profile pics
+      aspect: [1, 1],
       quality: 0.5,
       base64: true,
     });
@@ -97,20 +89,18 @@ export default function Profile() {
 
       let finalAvatarPath = profile?.avatar_url;
 
-      // 1. If a new avatar was picked, upload it
       if (newAvatarBase64) {
         const fileName = `${user.id}/avatar.jpg`;
         const arrayBuffer = decode(newAvatarBase64);
 
         const { error: uploadError } = await supabase.storage
           .from('family-media')
-          .upload(fileName, arrayBuffer, { contentType: 'image/jpeg', upsert: true }); // upsert overrides old pic
+          .upload(fileName, arrayBuffer, { contentType: 'image/jpeg', upsert: true });
 
         if (uploadError) throw uploadError;
         finalAvatarPath = fileName;
       }
 
-      // 2. Update the users table
       const { error: updateError } = await supabase
         .from('users')
         .update({ 
@@ -121,8 +111,7 @@ export default function Profile() {
 
       if (updateError) throw updateError;
 
-      // 3. Reload UI
-      await loadProfile();
+      await loadProfile(); // Reload data to show new image
       setShowEditModal(false);
       setNewAvatarBase64(null);
       setNewAvatarUri(null);
@@ -141,6 +130,7 @@ export default function Profile() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 40 }}>
+      {/* Top Section: Avatar and Edit Button Centered */}
       <View style={styles.header}>
         <View style={styles.avatar}>
           {avatarUrl ? (
@@ -149,8 +139,15 @@ export default function Profile() {
             <Text style={styles.avatarText}>{initial}</Text>
           )}
         </View>
+        
         <Text style={styles.name}>{profile?.full_name || 'Family Member'}</Text>
         <Text style={styles.email}>{profile?.email}</Text>
+
+        {/* Edit Profile Button placed here, under the email */}
+        <TouchableOpacity style={styles.editBtn} onPress={() => setShowEditModal(true)}>
+          <Ionicons name="pencil" size={14} color="#FFF" />
+          <Text style={styles.editBtnText}>Edit Profile</Text>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.section}>
@@ -184,15 +181,11 @@ export default function Profile() {
         <Text style={styles.signOutText}>Sign Out</Text>
       </TouchableOpacity>
 
-      
-
-      {/* Universal Modal for all actions */}
-      <Modal visible={activeModal !== null} transparent animationType="fade">
+      {/* --- EDIT PROFILE MODAL --- */}
+      <Modal visible={showEditModal} transparent animationType="slide">
         <View style={styles.modalBg}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Edit Profile</Text>
-
-            {/* INVITE MODAL */}
 
             <TouchableOpacity style={styles.pickAvatarBtn} onPress={pickAvatar}>
               {newAvatarUri || avatarUrl ? (
@@ -205,7 +198,6 @@ export default function Profile() {
               <Text style={styles.pickAvatarText}>Change Profile Picture</Text>
             </TouchableOpacity>
 
-            {/* Name Input */}
             <Text style={styles.label}>Full Name</Text>
             <TextInput 
               style={styles.input} 
@@ -213,42 +205,6 @@ export default function Profile() {
               onChangeText={setEditName} 
               placeholder="Enter your name" 
             />
-
-
-
-
-            {activeModal === 'invite' && (
-              <>
-              
-                <Text style={styles.modalTitle}>Invite Member</Text>
-                <TextInput style={styles.input} placeholder="Email address" value={inviteEmail} onChangeText={setInviteEmail} autoCapitalize="none" />
-                <TouchableOpacity style={styles.createBtn} onPress={() => {
-                  Alert.alert('Invite Sent!', `Invited ${inviteEmail}`);
-                  setActiveModal(null); setInviteEmail('');
-                }}><Text style={{ color: '#FFF', fontWeight: 'bold' }}>Send Invite</Text></TouchableOpacity>
-              </>
-            )}
-
-            {/* ACCESS GRANTS MODAL */}
-            {activeModal === 'access' && (
-              <>
-                <Text style={styles.modalTitle}>Manage Access</Text>
-                <Text style={{ color: '#7A675B', marginBottom: 20 }}>By default, family members can only see photos of their ancestors and descendants. To share a specific album with a sibling, you must grant them access here.</Text>
-                <Text style={{ fontWeight: 'bold', marginBottom: 10 }}>Your Albums:</Text>
-                <Text style={{ color: '#7A675B', fontStyle: 'italic' }}>No albums available to grant.</Text>
-              </>
-            )}
-
-            {/* NOTIFICATIONS MODAL */}
-            {activeModal === 'notifications' && (
-              <>
-                <Text style={styles.modalTitle}>Notifications</Text>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
-                  <Text style={{ fontSize: 16 }}>New photo alerts</Text>
-                  <Switch value={notificationsEnabled} onValueChange={setNotificationsEnabled} trackColor={{ true: '#7BA05B' }} />
-                </View>
-              </>
-            )}
 
             <View style={styles.modalActions}>
               <TouchableOpacity onPress={() => setShowEditModal(false)} disabled={isSaving}>
@@ -259,8 +215,43 @@ export default function Profile() {
                 {isSaving ? <ActivityIndicator color="#FFF" size="small" /> : <Text style={{ color: '#FFF', fontWeight: 'bold' }}>Save Changes</Text>}
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
 
-            {/* MEMBERS MODAL */}
+      {/* --- UNIVERSAL ACTION MODAL --- */}
+      <Modal visible={activeModal !== null} transparent animationType="fade">
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            
+            {activeModal === 'invite' && (
+              <>
+                <Text style={styles.modalTitle}>Invite Member</Text>
+                <TextInput style={styles.input} placeholder="Email address" value={inviteEmail} onChangeText={setInviteEmail} autoCapitalize="none" />
+                <TouchableOpacity style={styles.createBtn} onPress={() => {
+                  Alert.alert('Invite Sent!', `Invited ${inviteEmail}`);
+                  setActiveModal(null); setInviteEmail('');
+                }}><Text style={{ color: '#FFF', fontWeight: 'bold' }}>Send Invite</Text></TouchableOpacity>
+              </>
+            )}
+
+            {activeModal === 'access' && (
+              <>
+                <Text style={styles.modalTitle}>Manage Access</Text>
+                <Text style={{ color: '#7A675B', marginBottom: 20 }}>By default, family members can only see photos of their ancestors and descendants. To share a specific album with a sibling, you must grant them access here.</Text>
+              </>
+            )}
+
+            {activeModal === 'notifications' && (
+              <>
+                <Text style={styles.modalTitle}>Notifications</Text>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+                  <Text style={{ fontSize: 16 }}>New photo alerts</Text>
+                  <Switch value={notificationsEnabled} onValueChange={setNotificationsEnabled} trackColor={{ true: '#7BA05B' }} />
+                </View>
+              </>
+            )}
+
             {activeModal === 'members' && (
               <>
                 <Text style={styles.modalTitle}>Family Members ({memberCount})</Text>
@@ -286,11 +277,13 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FAF6EF' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FAF6EF' },
   header: { alignItems: 'center', paddingTop: 60, paddingBottom: 30 },
-  avatar: { width: 90, height: 90, borderRadius: 45, backgroundColor: '#3E2723', justifyContent: 'center', alignItems: 'center', marginBottom: 12, overflow: 'hidden' },
-  avatarImage: { width: 90, height: 90, borderRadius: 45 },
-  avatarText: { fontSize: 36, color: '#FFF', fontWeight: 'bold' },
+  avatar: { width: 100, height: 100, borderRadius: 50, backgroundColor: '#3E2723', justifyContent: 'center', alignItems: 'center', marginBottom: 12, overflow: 'hidden', borderWidth: 3, borderColor: '#D4A24C' },
+  avatarImage: { width: 100, height: 100, borderRadius: 50 },
+  avatarText: { fontSize: 40, color: '#FFF', fontWeight: 'bold' },
   name: { fontSize: 24, fontWeight: 'bold', color: '#2D1A10' },
   email: { fontSize: 14, color: '#7A675B', marginTop: 4 },
+  editBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12, backgroundColor: '#3E2723', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
+  editBtnText: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
   section: { paddingHorizontal: 20, marginBottom: 24 },
   sectionTitle: { fontSize: 12, fontWeight: 'bold', color: '#7A675B', letterSpacing: 1, marginBottom: 10 },
   row: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#FFF8F0', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#E8DFD4' },
@@ -300,18 +293,18 @@ const styles = StyleSheet.create({
   menuText: { fontSize: 16, color: '#2D1A10' },
   arrow: { fontSize: 20, color: '#A8988D' },
   signOutBtn: { marginHorizontal: 20, backgroundColor: '#8B2E2E', padding: 16, borderRadius: 12, alignItems: 'center' },
-  modalActions: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 },
-  label: { fontSize: 14, fontWeight: 'bold', color: '#2D1A10', marginBottom: 8 },
-  pickAvatarText: { color: '#3E2723', fontWeight: '600' },
   signOutText: { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
+  
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
-
   modalCard: { backgroundColor: '#FAF6EF', padding: 20, borderRadius: 16 },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#2D1A10', marginBottom: 16 },
-  pickAvatarBtn: { alignSelf: 'center', marginBottom: 16 },
-  previewAvatar: { width: 80, height: 80, borderRadius: 40 },
-  previewAvatarFallback: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#3E2723', justifyContent: 'center', alignItems: 'center' },
+  modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#2D1A10', marginBottom: 16, textAlign: 'center' },
+  pickAvatarBtn: { alignSelf: 'center', marginBottom: 20, alignItems: 'center' },
+  previewAvatar: { width: 90, height: 90, borderRadius: 45, marginBottom: 8 },
+  previewAvatarFallback: { width: 90, height: 90, borderRadius: 45, backgroundColor: '#3E2723', justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
+  pickAvatarText: { color: '#3E2723', fontWeight: '600' },
+  label: { fontSize: 14, fontWeight: 'bold', color: '#2D1A10', marginBottom: 8 },
   input: { backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E8DFD4', borderRadius: 8, padding: 14, fontSize: 16, marginBottom: 20 },
-  saveBtn: { backgroundColor: '#3E2723', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
+  modalActions: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 },
+  saveBtn: { backgroundColor: '#3E2723', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 },
   createBtn: { backgroundColor: '#3E2723', padding: 14, borderRadius: 8, alignItems: 'center' }
 });
