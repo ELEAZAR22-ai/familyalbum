@@ -1,19 +1,17 @@
-
 // FILE: app/(tabs)/upload.tsx
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
-  ScrollView, ActivityIndicator, Alert, Modal, Pressable, Platform
+  ScrollView, ActivityIndicator, Alert, Modal
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { decode } from 'base64-arraybuffer'; // Add this at the top
-import { Image } from 'expo-image';
+import { decode } from 'base64-arraybuffer'; // NEW IMPORT
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 
 interface Album { id: string; title: string; }
-interface SelectedMedia { id: string; uri: string; type: 'photo' | 'video'; mimeType: string; }
+interface SelectedMedia { id: string; uri: string; type: 'photo' | 'video'; base64: string | null; }
 
 const CEREMONY_OPTIONS = ['Wedding', 'Birthday', 'Funeral', 'Naming Ceremony', 'Anniversary', 'Other'];
 
@@ -25,6 +23,7 @@ export default function UploadScreen() {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [selectedAlbumId, setSelectedAlbumId] = useState('');
   const [isUploading, setIsUploading] = useState(false);
+  
   const [showAlbumModal, setShowAlbumModal] = useState(false);
   const [newAlbumTitle, setNewAlbumTitle] = useState('');
   const [isCreatingAlbum, setIsCreatingAlbum] = useState(false);
@@ -43,26 +42,22 @@ export default function UploadScreen() {
 
   const handlePickMedia = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) return Alert.alert('Permission needed', 'Allow gallery access to upload.');
+    if (!perm.granted) return Alert.alert('Permission needed', 'Allow gallery access.');
 
     const result = await ImagePicker.launchImageLibraryAsync({
-  mediaTypes: ImagePicker.MediaTypeOptions.All,
-  allowsMultipleSelection: true,
-  quality: 0.7,
-  base64: true, // ADD THIS
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
+      allowsMultipleSelection: true,
+      quality: 0.7,
+      base64: true, // CRITICAL: Tells Expo to convert the file to base64
     });
 
     if (!result.canceled) {
-      const newItems = result.assets.map((asset, i) => {
-        // Force a safe mime type for Android
-        const isVideo = asset.type === 'video';
-        return {
-          id: `${Date.now()}_${i}`,
-          uri: asset.uri,
-          type: isVideo ? 'video' : 'photo',
-          mimeType: isVideo ? 'video/mp4' : 'image/jpeg', 
-        } as SelectedMedia;
-      });
+      const newItems = result.assets.map((asset, i) => ({
+        id: `${Date.now()}_${i}`,
+        uri: asset.uri,
+        type: asset.type === 'video' ? 'video' : 'photo',
+        base64: asset.base64, // Save the base64 string
+      } as SelectedMedia));
       setPickedMediaList(prev => [...prev, ...newItems]);
     }
   };
@@ -76,9 +71,8 @@ export default function UploadScreen() {
       owner_id: user?.id, title: newAlbumTitle.trim(), visibility: 'lineal'
     }).select('id, title').single();
 
-    if (error) {
-      Alert.alert('Error', error.message);
-    } else if (data) {
+    if (error) Alert.alert('Error', error.message);
+    else if (data) {
       setAlbums([data, ...albums]);
       setSelectedAlbumId(data.id);
       setShowAlbumModal(false);
@@ -87,68 +81,65 @@ export default function UploadScreen() {
     setIsCreatingAlbum(false);
   };
 
-const handleSubmit = async () => {
-  if (pickedMediaList.length === 0) return Alert.alert('No Media', 'Please pick a photo or video first.');
-  if (!selectedAlbumId) return Alert.alert('No Album', 'Please create an album first.');
+  const handleSubmit = async () => {
+    if (pickedMediaList.length === 0) return Alert.alert('No Media', 'Please pick a photo first.');
+    if (!selectedAlbumId) return Alert.alert('No Album', 'Please create an album first.');
 
-  setIsUploading(true);
-  try {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) throw new Error("Not logged in");
+    setIsUploading(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("Not logged in");
 
-    for (let i = 0; i < pickedMediaList.length; i++) {
-      const item = pickedMediaList[i];
-      
-      // 1. Get the file as base64 (requires re-picking with base64: true)
-      // NOTE: You must update handlePickMedia to include base64: true
-      const response = await fetch(item.uri);
-      const blob = await response.blob();
-      
-      // 2. Convert Blob to ArrayBuffer for Supabase
-      const arrayBuffer = await new Response(blob).arrayBuffer();
-      
-      const fileExt = item.type === 'video' ? 'mp4' : 'jpg';
-      const fileName = `${user.id}/${Date.now()}_${i}.${fileExt}`;
+      for (let i = 0; i < pickedMediaList.length; i++) {
+        const item = pickedMediaList[i];
+        
+        // Safety check
+        if (!item.base64) throw new Error("Could not read file data.");
 
-      // 3. Upload with explicit contentType
-      const { error: uploadError } = await supabase.storage
-        .from('family-media')
-        .upload(fileName, arrayBuffer, { 
-          contentType: item.type === 'video' ? 'video/mp4' : 'image/jpeg' 
+        const fileExt = item.type === 'video' ? 'mp4' : 'jpg';
+        const fileName = `${user.id}/${Date.now()}_${i}.${fileExt}`;
+
+        // Convert base64 to ArrayBuffer
+        const arrayBuffer = decode(item.base64);
+
+        // Upload to Storage with explicit image/jpeg type
+        const { error: uploadError } = await supabase.storage
+          .from('family-media')
+          .upload(fileName, arrayBuffer, { 
+            contentType: item.type === 'video' ? 'video/mp4' : 'image/jpeg' 
+          });
+
+        if (uploadError) throw new Error(`Storage error: ${uploadError.message}`);
+
+        // Save to Database
+        const { error: dbError } = await supabase.from('media').insert({
+          album_id: selectedAlbumId,
+          uploader_id: user.id,
+          media_type: item.type,
+          storage_path: fileName,
+          caption: caption.trim() || null,
+          ceremony_tag: selectedTag || null,
         });
 
-      if (uploadError) throw new Error(`Storage error: ${uploadError.message}`);
+        if (dbError) throw new Error(`Database error: ${dbError.message}`);
+      }
 
-      // 4. Save to database
-      const { error: dbError } = await supabase.from('media').insert({
-        album_id: selectedAlbumId,
-        uploader_id: user.id,
-        media_type: item.type,
-        storage_path: fileName,
-        caption: caption.trim() || null,
-        ceremony_tag: selectedTag || null,
-      });
-
-      if (dbError) throw new Error(`Database error: ${dbError.message}`);
+      Alert.alert('Success', 'Memories saved to the vault!');
+      setPickedMediaList([]);
+      setCaption('');
+      setSelectedTag('');
+      router.push('/(tabs)/home');
+    } catch (err: any) {
+      Alert.alert('Upload Failed', err.message);
+    } finally {
+      setIsUploading(false);
     }
-
-    Alert.alert('Success', 'Memories saved to the vault!');
-    setPickedMediaList([]);
-    setCaption('');
-    setSelectedTag('');
-    router.push('/(tabs)/home');
-  } catch (err: any) {
-    Alert.alert('Upload Failed', err.message);
-  } finally {
-    setIsUploading(false);
-  }
-};
+  };
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ padding: 20, paddingTop: 60 }}>
       <Text style={styles.title}>Upload</Text>
       
-      {/* Media Picker Box */}
       <TouchableOpacity style={styles.uploadBox} onPress={handlePickMedia}>
         <Ionicons name="images-outline" size={40} color="#D4A24C" />
         <Text style={styles.uploadBoxText}>
@@ -156,7 +147,6 @@ const handleSubmit = async () => {
         </Text>
       </TouchableOpacity>
 
-      {/* Album Selector */}
       <View style={styles.row}>
         <Text style={styles.label}>Album</Text>
         <TouchableOpacity onPress={() => setShowAlbumModal(true)}>
@@ -175,7 +165,6 @@ const handleSubmit = async () => {
         ))}
       </ScrollView>
 
-      {/* Caption & Tag */}
       <Text style={styles.label}>Caption</Text>
       <TextInput style={styles.input} placeholder="Describe this memory..." value={caption} onChangeText={setCaption} />
       
@@ -192,7 +181,6 @@ const handleSubmit = async () => {
         {isUploading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.btnText}>Save to Family Vault</Text>}
       </TouchableOpacity>
 
-      {/* Create Album Modal */}
       <Modal visible={showAlbumModal} transparent animationType="fade">
         <View style={styles.modalBg}>
           <View style={styles.modalCard}>
