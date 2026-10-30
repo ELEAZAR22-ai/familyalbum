@@ -15,7 +15,7 @@ export default function Profile() {
   const [memberCount, setMemberCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
-  // Action Modals State (Invite, Access, etc.)
+  // Action Modals State
   const [activeModal, setActiveModal] = useState<'invite' | 'access' | 'notifications' | 'members' | null>(null);
   const [inviteEmail, setInviteEmail] = useState('');
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
@@ -41,18 +41,14 @@ export default function Profile() {
       if (data) {
         setProfile(data);
         setEditName(data.full_name || '');
-        
-        // Fetch the actual image from the private bucket
         if (data.avatar_url) {
           const signedUrl = await getSignedImageUrl(data.avatar_url);
           setAvatarUrl(signedUrl);
         }
       }
 
-      // Fetch member count
       const { count } = await supabase.from('users').select('*', { count: 'exact', head: true });
       setMemberCount(count || 1);
-
     } catch (err) {
       console.error(err);
     } finally {
@@ -65,10 +61,9 @@ export default function Profile() {
     router.replace('/(auth)/login');
   };
 
-  // --- EDIT PROFILE LOGIC ---
   const pickAvatar = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'], // Updated to avoid deprecation warning
+      mediaTypes: ['images'],
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.5,
@@ -81,7 +76,7 @@ export default function Profile() {
     }
   };
 
-       const saveProfileChanges = async () => {
+  const saveProfileChanges = async () => {
     setIsSaving(true);
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -90,10 +85,8 @@ export default function Profile() {
       let finalAvatarPath = profile?.avatar_url || '';
       const finalName = editName ? editName.trim() : profile?.full_name || 'Family Member';
 
-      // 1. Upload image if changed
       if (newAvatarBase64) {
-        // Added Date.now() to the filename to prevent phone caching
-        const fileName = `${user.id}/avatar_${Date.now()}.jpg`; 
+        const fileName = `${user.id}/avatar_${Date.now()}.jpg`;
         const arrayBuffer = decode(newAvatarBase64);
 
         const { error: uploadError } = await supabase.storage
@@ -104,22 +97,18 @@ export default function Profile() {
         finalAvatarPath = fileName;
       }
 
-      // 2. Call the secure SQL function
-      const { error: updateError } = await supabase.rpc('update_my_profile', {
-        new_name: finalName,
-        new_avatar: finalAvatarPath
-      });
+      const { error: updateError } = await supabase
+        .from('users')
+        .update({ full_name: finalName, avatar_url: finalAvatarPath })
+        .eq('id', user.id);
 
       if (updateError) throw updateError;
 
-      // 3. INSTANTLY UPDATE THE SCREEN
-      // Instead of waiting for loadProfile(), update the local state immediately
       setProfile({ ...profile, full_name: finalName, avatar_url: finalAvatarPath });
       
       if (finalAvatarPath) {
-        // Fetch the new signed URL and add a cache-buster
         const newUrl = await getSignedImageUrl(finalAvatarPath);
-        if (newUrl) setAvatarUrl(`${newUrl}&t=${Date.now()}`);
+        if (newUrl) setAvatarUrl(`${newUrl}&t=${Date.now()}`); // Cache buster
       }
 
       setShowEditModal(false);
@@ -140,7 +129,6 @@ export default function Profile() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 40 }}>
-      {/* Top Section: Avatar and Edit Button Centered */}
       <View style={styles.header}>
         <View style={styles.avatar}>
           {avatarUrl ? (
@@ -149,11 +137,9 @@ export default function Profile() {
             <Text style={styles.avatarText}>{initial}</Text>
           )}
         </View>
-        
         <Text style={styles.name}>{profile?.full_name || 'Family Member'}</Text>
         <Text style={styles.email}>{profile?.email}</Text>
 
-        {/* Edit Profile Button placed here, under the email */}
         <TouchableOpacity style={styles.editBtn} onPress={() => setShowEditModal(true)}>
           <Ionicons name="pencil" size={14} color="#FFF" />
           <Text style={styles.editBtnText}>Edit Profile</Text>
@@ -170,17 +156,14 @@ export default function Profile() {
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>ACTIONS</Text>
-        
         <TouchableOpacity style={styles.menuItem} onPress={() => setActiveModal('invite')}>
           <Text style={styles.menuText}>Invite a family member</Text>
           <Text style={styles.arrow}>›</Text>
         </TouchableOpacity>
-
         <TouchableOpacity style={styles.menuItem} onPress={() => setActiveModal('access')}>
           <Text style={styles.menuText}>Manage access grants</Text>
           <Text style={styles.arrow}>›</Text>
         </TouchableOpacity>
-
         <TouchableOpacity style={styles.menuItem} onPress={() => setActiveModal('notifications')}>
           <Text style={styles.menuText}>Notification settings</Text>
           <Text style={styles.arrow}>›</Text>
@@ -191,36 +174,25 @@ export default function Profile() {
         <Text style={styles.signOutText}>Sign Out</Text>
       </TouchableOpacity>
 
-      {/* --- EDIT PROFILE MODAL --- */}
+      {/* EDIT PROFILE MODAL */}
       <Modal visible={showEditModal} transparent animationType="slide">
         <View style={styles.modalBg}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Edit Profile</Text>
-
             <TouchableOpacity style={styles.pickAvatarBtn} onPress={pickAvatar}>
               {newAvatarUri || avatarUrl ? (
                 <Image source={{ uri: newAvatarUri || avatarUrl! }} style={styles.previewAvatar} />
               ) : (
-                <View style={styles.previewAvatarFallback}>
-                  <Ionicons name="camera" size={30} color="#FFF" />
-                </View>
+                <View style={styles.previewAvatarFallback}><Ionicons name="camera" size={30} color="#FFF" /></View>
               )}
               <Text style={styles.pickAvatarText}>Change Profile Picture</Text>
             </TouchableOpacity>
-
             <Text style={styles.label}>Full Name</Text>
-            <TextInput 
-              style={styles.input} 
-              value={editName} 
-              onChangeText={setEditName} 
-              placeholder="Enter your name" 
-            />
-
+            <TextInput style={styles.input} value={editName} onChangeText={setEditName} />
             <View style={styles.modalActions}>
               <TouchableOpacity onPress={() => setShowEditModal(false)} disabled={isSaving}>
                 <Text style={{ color: '#7A675B', fontWeight: '600' }}>Cancel</Text>
               </TouchableOpacity>
-              
               <TouchableOpacity style={styles.saveBtn} onPress={saveProfileChanges} disabled={isSaving}>
                 {isSaving ? <ActivityIndicator color="#FFF" size="small" /> : <Text style={{ color: '#FFF', fontWeight: 'bold' }}>Save Changes</Text>}
               </TouchableOpacity>
@@ -229,29 +201,25 @@ export default function Profile() {
         </View>
       </Modal>
 
-      {/* --- UNIVERSAL ACTION MODAL --- */}
+      {/* ACTION MODALS */}
       <Modal visible={activeModal !== null} transparent animationType="fade">
         <View style={styles.modalBg}>
           <View style={styles.modalCard}>
-            
             {activeModal === 'invite' && (
               <>
                 <Text style={styles.modalTitle}>Invite Member</Text>
                 <TextInput style={styles.input} placeholder="Email address" value={inviteEmail} onChangeText={setInviteEmail} autoCapitalize="none" />
                 <TouchableOpacity style={styles.createBtn} onPress={() => {
-                  Alert.alert('Invite Sent!', `Invited ${inviteEmail}`);
-                  setActiveModal(null); setInviteEmail('');
+                  Alert.alert('Invite Sent!', `Invited ${inviteEmail}`); setActiveModal(null); setInviteEmail('');
                 }}><Text style={{ color: '#FFF', fontWeight: 'bold' }}>Send Invite</Text></TouchableOpacity>
               </>
             )}
-
             {activeModal === 'access' && (
               <>
                 <Text style={styles.modalTitle}>Manage Access</Text>
-                <Text style={{ color: '#7A675B', marginBottom: 20 }}>By default, family members can only see photos of their ancestors and descendants. To share a specific album with a sibling, you must grant them access here.</Text>
+                <Text style={{ color: '#7A675B', marginBottom: 20 }}>By default, family members can only see photos of their ancestors and descendants.</Text>
               </>
             )}
-
             {activeModal === 'notifications' && (
               <>
                 <Text style={styles.modalTitle}>Notifications</Text>
@@ -261,7 +229,6 @@ export default function Profile() {
                 </View>
               </>
             )}
-
             {activeModal === 'members' && (
               <>
                 <Text style={styles.modalTitle}>Family Members ({memberCount})</Text>
@@ -271,14 +238,12 @@ export default function Profile() {
                 </View>
               </>
             )}
-
             <TouchableOpacity style={{ marginTop: 20, alignItems: 'center' }} onPress={() => setActiveModal(null)}>
               <Text style={{ color: '#7A675B', fontWeight: 'bold' }}>Close</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
-
     </ScrollView>
   );
 }
@@ -304,7 +269,6 @@ const styles = StyleSheet.create({
   arrow: { fontSize: 20, color: '#A8988D' },
   signOutBtn: { marginHorizontal: 20, backgroundColor: '#8B2E2E', padding: 16, borderRadius: 12, alignItems: 'center' },
   signOutText: { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
-  
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
   modalCard: { backgroundColor: '#FAF6EF', padding: 20, borderRadius: 16 },
   modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#2D1A10', marginBottom: 16, textAlign: 'center' },

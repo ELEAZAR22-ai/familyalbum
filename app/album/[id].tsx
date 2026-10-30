@@ -2,10 +2,19 @@
 import { useEffect, useState } from 'react';
 import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, Alert } from 'react-native';
 import { Image } from 'expo-image';
+import { VideoView, useVideoPlayer } from 'expo-video';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
 import { getSignedImageUrl } from '../../lib/media';
+
+function VideoThumbnail({ uri }: { uri: string }) {
+  const player = useVideoPlayer(uri, (player) => {
+    player.muted = true;
+  });
+
+  return <VideoView player={player} style={styles.image} contentFit="cover" nativeControls={false} />;
+}
 
 export default function AlbumDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -24,8 +33,6 @@ export default function AlbumDetail() {
       const withUrls = await Promise.all(
         data.map(async (item) => {
           const url = await getSignedImageUrl(item.storage_path);
-          console.log("IMAGE PATH:", item.storage_path);
-          console.log("GENERATED URL:", url);
           return { ...item, displayUrl: url };
         })
       );
@@ -38,10 +45,9 @@ export default function AlbumDetail() {
     fetchMedia();
   }, [id]);
 
-  // --- NEW: Delete Media Function ---
   const confirmDeleteMedia = (mediaId: string, storagePath: string) => {
     Alert.alert(
-      "Delete Photo",
+      "Delete Media",
       "Are you sure you want to permanently delete this memory?",
       [
         { text: "Cancel", style: "cancel" },
@@ -56,22 +62,12 @@ export default function AlbumDetail() {
 
   const deleteMedia = async (mediaId: string, storagePath: string) => {
     try {
-      // 1. Delete from Storage
-      const { error: storageError } = await supabase.storage
-        .from('family-media')
-        .remove([storagePath]);
-
-      if (storageError) console.warn("Storage deletion warning:", storageError.message);
-
-      // 2. Delete from Database
+      await supabase.storage.from('family-media').remove([storagePath]);
       const { error: dbError } = await supabase.from('media').delete().eq('id', mediaId);
-      
       if (dbError) throw dbError;
-
-      // 3. Update UI
       setMedia(prev => prev.filter(m => m.id !== mediaId));
     } catch (err: any) {
-      Alert.alert('Error', err.message || 'Could not delete photo.');
+      Alert.alert('Error', err.message || 'Could not delete media.');
     }
   };
 
@@ -83,7 +79,7 @@ export default function AlbumDetail() {
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Text style={styles.backText}>‹ Back</Text>
         </TouchableOpacity>
-        <Text style={styles.title}>Album Photos</Text>
+        <Text style={styles.title}>Album Media</Text>
         <View style={{ width: 50 }} />
       </View>
 
@@ -94,12 +90,24 @@ export default function AlbumDetail() {
         columnWrapperStyle={{ gap: 12, paddingHorizontal: 20 }}
         contentContainerStyle={{ gap: 12, paddingVertical: 20 }}
         ListEmptyComponent={() => (
-          <Text style={{ textAlign: 'center', marginTop: 40, color: '#7A675B' }}>No photos in this album yet.</Text>
+          <Text style={{ textAlign: 'center', marginTop: 40, color: '#7A675B' }}>No media in this album yet.</Text>
         )}
         renderItem={({ item }) => (
-          <View style={styles.mediaCard}>
+          <TouchableOpacity 
+            style={styles.mediaCard}
+            onPress={() => router.push(`/media/${item.id}?type=${item.media_type}&path=${encodeURIComponent(item.storage_path)}`)}
+          >
             {item.displayUrl ? (
-              <Image source={{ uri: item.displayUrl }} style={styles.image} contentFit="cover" />
+              item.media_type === 'video' ? (
+                <View style={styles.videoWrapper}>
+                  <VideoThumbnail uri={item.displayUrl} />
+                  <View style={styles.playIconOverlay}>
+                    <Ionicons name="play-circle" size={40} color="rgba(255,255,255,0.8)" />
+                  </View>
+                </View>
+              ) : (
+                <Image source={{ uri: item.displayUrl }} style={styles.image} contentFit="cover" />
+              )
             ) : (
               <View style={[styles.image, styles.placeholder]}><Text>📷</Text></View>
             )}
@@ -109,14 +117,16 @@ export default function AlbumDetail() {
               <Text style={styles.tag}>{item.ceremony_tag || 'No tag'}</Text>
             </View>
 
-            {/* Delete Button */}
             <TouchableOpacity 
               style={styles.deleteBtn} 
-              onPress={() => confirmDeleteMedia(item.id, item.storage_path)}
+              onPress={(e) => {
+                e.stopPropagation();
+                confirmDeleteMedia(item.id, item.storage_path);
+              }}
             >
               <Ionicons name="trash" size={14} color="#FFF" />
             </TouchableOpacity>
-          </View>
+          </TouchableOpacity>
         )}
       />
     </View>
@@ -133,6 +143,8 @@ const styles = StyleSheet.create({
   mediaCard: { flex: 1, backgroundColor: '#FFF8F0', borderRadius: 12, borderWidth: 1, borderColor: '#E8DFD4', overflow: 'hidden' },
   image: { width: '100%', aspectRatio: 1, backgroundColor: '#E8DFD4' },
   placeholder: { justifyContent: 'center', alignItems: 'center' },
+  videoWrapper: { position: 'relative', width: '100%', aspectRatio: 1 },
+  playIconOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center' },
   textContainer: { padding: 8 },
   caption: { fontSize: 12, fontWeight: '600', color: '#2D1A10' },
   tag: { fontSize: 10, color: '#7A675B' },

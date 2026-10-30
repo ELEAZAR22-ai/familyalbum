@@ -1,10 +1,20 @@
 // FILE: app/(tabs)/home.tsx
 import { useEffect, useState, useCallback } from 'react';
-import { View, Text, FlatList, StyleSheet, ActivityIndicator, RefreshControl, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, FlatList, StyleSheet, ActivityIndicator, RefreshControl, TouchableOpacity } from 'react-native';
 import { Image } from 'expo-image';
+import { VideoView, useVideoPlayer } from 'expo-video';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
 import { getSignedImageUrl } from '../../lib/media';
+
+function MediaVideo({ uri }: { uri: string }) {
+  const player = useVideoPlayer(uri, (player) => {
+    player.muted = true;
+  });
+
+  return <VideoView player={player} style={styles.image} contentFit="cover" nativeControls={false} />;
+}
 
 export default function Home() {
   const router = useRouter();
@@ -18,37 +28,24 @@ export default function Home() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // 1. Fetch Profile (Removed .single() to prevent crashes if row is missing)
       const { data: profileData } = await supabase.from('users').select('*').eq('id', user.id);
       if (profileData && profileData.length > 0) {
         setProfile(profileData[0]);
-      } else {
-        // Fallback if no row exists
-        setProfile({ full_name: user.email?.split('@')[0] || 'User' });
       }
 
-      // 2. Fetch Media
-      const { data: mediaData, error } = await supabase
-        .from('media')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
+      const { data: mediaData } = await supabase.from('media').select('*').order('created_at', { ascending: false });
 
       if (mediaData) {
-        // 3. Generate Signed URLs for all photos
         const mediaWithUrls = await Promise.all(
-  mediaData.map(async (item) => {
-    const url = await getSignedImageUrl(item.storage_path);
-    console.log("IMAGE PATH:", item.storage_path);
-    console.log("GENERATED URL:", url);
-    return { ...item, displayUrl: url };
+          mediaData.map(async (item) => {
+            const url = await getSignedImageUrl(item.storage_path);
+            return { ...item, displayUrl: url };
           })
         );
         setMedia(mediaWithUrls);
       }
     } catch (error: any) {
-      Alert.alert("Error loading feed", error.message);
+      console.error(error.message);
     }
   };
 
@@ -68,7 +65,6 @@ export default function Home() {
 
   return (
     <View style={styles.container}>
-      {/* Header with Profile Circle */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.push('/(tabs)/profile')} style={styles.profileRow}>
           <View style={styles.avatar}>
@@ -89,17 +85,29 @@ export default function Home() {
         contentContainerStyle={{ gap: 12, paddingBottom: 40 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         ListEmptyComponent={() => (
-          <Text style={{ textAlign: 'center', marginTop: 40, color: '#7A675B' }}>No photos yet. Upload one!</Text>
+          <Text style={{ textAlign: 'center', marginTop: 40, color: '#7A675B' }}>No media yet. Upload one!</Text>
         )}
         renderItem={({ item }) => (
-          <View style={styles.card}>
+          <TouchableOpacity 
+            style={styles.card}
+            onPress={() => router.push(`/media/${item.id}?type=${item.media_type}&path=${encodeURIComponent(item.storage_path)}`)}
+          >
             {item.displayUrl ? (
-              <Image source={{ uri: item.displayUrl }} style={styles.image} contentFit="cover" transition={200} />
+              item.media_type === 'video' ? (
+                <View style={styles.videoWrapper}>
+                  <MediaVideo uri={item.displayUrl} />
+                  <View style={styles.playIconOverlay}>
+                    <Ionicons name="play-circle" size={40} color="rgba(255,255,255,0.8)" />
+                  </View>
+                </View>
+              ) : (
+                <Image source={{ uri: item.displayUrl }} style={styles.image} contentFit="cover" transition={200} />
+              )
             ) : (
               <View style={[styles.image, styles.placeholder]}><Text>📷</Text></View>
             )}
             <Text style={styles.caption} numberOfLines={1}>{item.caption || 'No caption'}</Text>
-          </View>
+          </TouchableOpacity>
         )}
       />
     </View>
@@ -118,5 +126,7 @@ const styles = StyleSheet.create({
   card: { flex: 1, backgroundColor: '#FFF8F0', borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: '#E8DFD4' },
   image: { width: '100%', aspectRatio: 1, backgroundColor: '#E8DFD4' },
   placeholder: { justifyContent: 'center', alignItems: 'center' },
+  videoWrapper: { position: 'relative', width: '100%', aspectRatio: 1 },
+  playIconOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center' },
   caption: { fontSize: 12, fontWeight: '500', color: '#2D1A10', padding: 8 },
 });

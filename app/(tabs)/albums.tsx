@@ -1,11 +1,13 @@
 // FILE: app/(tabs)/albums.tsx
 import { useEffect, useState, useCallback } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Modal, TextInput, Alert } from 'react-native';
+import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
+import { getSignedImageUrl } from '../../lib/media';
 
-interface Album { id: string; title: string; created_at: string; }
+interface Album { id: string; title: string; created_at: string; cover_url?: string | null; }
 
 export default function Albums() {
   const router = useRouter();
@@ -18,8 +20,29 @@ export default function Albums() {
   const [isCreating, setIsCreating] = useState(false);
 
   async function fetchAlbums() {
-    const { data } = await supabase.from('albums').select('*').order('created_at', { ascending: false });
-    if (data) setAlbums(data);
+    // 1. Get all albums
+    const { data: albumsData } = await supabase.from('albums').select('*').order('created_at', { ascending: false });
+    
+    if (albumsData) {
+      // 2. For each album, fetch its most recent media to use as a cover
+      const albumsWithCovers = await Promise.all(
+        albumsData.map(async (album) => {
+          const { data: mediaData } = await supabase
+            .from('media')
+            .select('storage_path, media_type')
+            .eq('album_id', album.id)
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+          if (mediaData && mediaData.length > 0) {
+            const coverUrl = await getSignedImageUrl(mediaData[0].storage_path);
+            return { ...album, cover_url: coverUrl };
+          }
+          return { ...album, cover_url: null };
+        })
+      );
+      setAlbums(albumsWithCovers);
+    }
   }
 
   useEffect(() => { fetchAlbums().then(() => setLoading(false)); }, []);
@@ -45,41 +68,23 @@ export default function Albums() {
     else { setShowModal(false); setNewTitle(''); fetchAlbums(); }
   }
 
-  // --- NEW: Delete Album Function ---
   const confirmDeleteAlbum = (albumId: string, albumTitle: string) => {
-    Alert.alert(
-      "Delete Album",
-      `Are you sure you want to delete "${albumTitle}"? All photos inside will be permanently removed.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        { 
-          text: "Delete", 
-          style: "destructive", 
-          onPress: () => deleteAlbum(albumId)
-        }
-      ]
-    );
+    Alert.alert("Delete Album", `Are you sure you want to delete "${albumTitle}"? All photos inside will be permanently removed.`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Delete", style: "destructive", onPress: () => deleteAlbum(albumId) }
+    ]);
   };
 
   const deleteAlbum = async (albumId: string) => {
     try {
-      // 1. Fetch all media paths in this album to delete from storage
       const { data: mediaData } = await supabase.from('media').select('storage_path').eq('album_id', albumId);
-      
       if (mediaData && mediaData.length > 0) {
         const filesToDelete = mediaData.map(m => m.storage_path);
-        // Delete from Storage
         await supabase.storage.from('family-media').remove(filesToDelete);
       }
-
-      // 2. Delete from Database (This will cascade delete the media rows if set up in SQL)
       const { error } = await supabase.from('albums').delete().eq('id', albumId);
-      
       if (error) throw error;
-      
-      // 3. Update UI
       setAlbums(prev => prev.filter(a => a.id !== albumId));
-      Alert.alert('Deleted', 'Album removed successfully.');
     } catch (err: any) {
       Alert.alert('Error', err.message || 'Could not delete album.');
     }
@@ -109,12 +114,15 @@ export default function Albums() {
         renderItem={({ item }) => (
           <View style={styles.cardWrapper}>
             <TouchableOpacity style={styles.card} onPress={() => router.push(`/album/${item.id}`)}>
-              <View style={styles.placeholder}><Text style={{ fontSize: 30 }}>📷</Text></View>
+              {item.cover_url ? (
+                <Image source={{ uri: item.cover_url }} style={styles.albumCover} contentFit="cover" />
+              ) : (
+                <View style={styles.placeholder}><Text style={{ fontSize: 30 }}>📷</Text></View>
+              )}
               <Text style={styles.albumTitle} numberOfLines={1}>{item.title}</Text>
               <Text style={styles.date}>{new Date(item.created_at).toLocaleDateString()}</Text>
             </TouchableOpacity>
             
-            {/* Delete Button */}
             <TouchableOpacity 
               style={styles.deleteBtn} 
               onPress={() => confirmDeleteAlbum(item.id, item.title)}
@@ -125,7 +133,6 @@ export default function Albums() {
         )}
       />
 
-      {/* Create Album Modal */}
       <Modal visible={showModal} transparent animationType="slide">
         <View style={styles.modalBg}>
           <View style={styles.modalCard}>
@@ -153,6 +160,7 @@ const styles = StyleSheet.create({
   addBtnText: { color: '#FFF', fontWeight: 'bold' },
   cardWrapper: { flex: 1, position: 'relative' },
   card: { backgroundColor: '#FFF8F0', borderRadius: 16, padding: 10, borderWidth: 1, borderColor: '#E8DFD4' },
+  albumCover: { width: '100%', aspectRatio: 1, borderRadius: 12, marginBottom: 8 },
   placeholder: { width: '100%', aspectRatio: 1, borderRadius: 12, backgroundColor: '#E8DFD4', justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
   albumTitle: { fontSize: 14, fontWeight: 'bold', color: '#2D1A10' },
   date: { fontSize: 11, color: '#7A675B', marginTop: 2 },
