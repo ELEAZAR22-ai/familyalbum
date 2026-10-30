@@ -81,16 +81,19 @@ export default function Profile() {
     }
   };
 
-  const saveProfileChanges = async () => {
+       const saveProfileChanges = async () => {
     setIsSaving(true);
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Not logged in");
 
-      let finalAvatarPath = profile?.avatar_url;
+      let finalAvatarPath = profile?.avatar_url || '';
+      const finalName = editName ? editName.trim() : profile?.full_name || 'Family Member';
 
+      // 1. Upload image if changed
       if (newAvatarBase64) {
-        const fileName = `${user.id}/avatar.jpg`;
+        // Added Date.now() to the filename to prevent phone caching
+        const fileName = `${user.id}/avatar_${Date.now()}.jpg`; 
         const arrayBuffer = decode(newAvatarBase64);
 
         const { error: uploadError } = await supabase.storage
@@ -101,17 +104,24 @@ export default function Profile() {
         finalAvatarPath = fileName;
       }
 
-      const { error: updateError } = await supabase
-        .from('users')
-        .update({ 
-          full_name: editName.trim(),
-          avatar_url: finalAvatarPath 
-        })
-        .eq('id', user.id);
+      // 2. Call the secure SQL function
+      const { error: updateError } = await supabase.rpc('update_my_profile', {
+        new_name: finalName,
+        new_avatar: finalAvatarPath
+      });
 
       if (updateError) throw updateError;
 
-      await loadProfile(); // Reload data to show new image
+      // 3. INSTANTLY UPDATE THE SCREEN
+      // Instead of waiting for loadProfile(), update the local state immediately
+      setProfile({ ...profile, full_name: finalName, avatar_url: finalAvatarPath });
+      
+      if (finalAvatarPath) {
+        // Fetch the new signed URL and add a cache-buster
+        const newUrl = await getSignedImageUrl(finalAvatarPath);
+        if (newUrl) setAvatarUrl(`${newUrl}&t=${Date.now()}`);
+      }
+
       setShowEditModal(false);
       setNewAvatarBase64(null);
       setNewAvatarUri(null);
